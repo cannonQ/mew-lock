@@ -4,6 +4,8 @@
 
 One HIGH finding in `campaign.es` needs a one-line fix before deploy: sweeping two expired campaigns in one transaction lets the builder keep all but the largest. `position.es` is clean. Rating: campaign 6/10 as submitted (about 8.5/10 with the fix), position 9/10.
 
+**Update (v3 retest):** v3 fixes F-1 and F-2, and MockChain confirms both fixes. One operational item remains: a live v2 campaign can still be swept together with a v3 campaign that pays the same fee address. See [v3 retest](#v3-retest).
+
 ## Findings
 
 | ID | Severity | Contract | Lines | Finding | Fix size |
@@ -116,6 +118,44 @@ The contract has no admin keys, so these constants and the initial box are set o
 - **No overflow.** Weight is converted to BigInt before multiplying (line 111). The Long additions on lines 118 and 132 only overflow for impossible amounts, and would fail closed.
 - **No data inputs or context variables**, so none can be substituted.
 
+## v3 retest
+
+v3 changes only two lines of code, both as recommended: the sweep requires `SELF.id == INPUTS(0).id` (F-1), and a zero reward in a separate reward token needs no token slot (F-2). The rest of the diff is comments.
+
+**MockChain results** (fleet-sdk 0.12 MockChain, local only; `ensureInclusion` on and input count checked, so campaign scripts really executed). Reproduce with `cd audit/mockchain && npm i && npm test`.
+
+| Check | Contract | Expected | Result |
+| --- | --- | --- | --- |
+| Two expired campaigns swept together | audited | accepted | accepted (attack works) |
+| Two expired campaigns swept together | v3 | rejected | rejected |
+| Normal single-campaign sweep | v3 | accepted | accepted |
+| Zero-reward lock, reward in its own token | audited | rejected | rejected |
+| Zero-reward lock, reward in its own token | v3 | accepted | accepted |
+| Lock at the maximum reward | v3 | accepted | accepted |
+| Lock asking 1 unit over the maximum | v3 | rejected | rejected |
+| Top-up with Coll[Byte] in R4–R8 of `OUTPUTS(1)` (NV-1) | v3 | accepted | accepted |
+| Sweep with Coll[Byte] R4 on the fee output (NV-1) | v3 | accepted | accepted |
+| v3 (input 0) + v2 swept together, same fee address | v3 + v2 | — | **accepted** |
+| v3 (input 0) + v2 swept together, different fee addresses | v3 + v2 | rejected | rejected |
+
+**Status of findings**
+
+| ID | Status |
+| --- | --- |
+| F-1 | Fixed in v3. Residual risk for live v2 campaigns (V3-1 below) |
+| F-2 | Fixed in v3 |
+| F-3, F-4, F-5 | Accepted by the team; no change needed |
+| NV-1 | Closed: untaken-branch register reads do not reject (tested here, and by the team under sigmastate and sigma-rust) |
+| P-1 | Accepted; the team's unlock burns the marker. UI filter by creation transaction is an optional follow-up |
+| P-2 | Fixed (comment only) |
+| P-3 | Accepted; the page uses the connected wallet's key |
+
+**V3-1: a live v2 campaign can still be co-swept with a v3 campaign.** v3 only protects the campaign at input 0; v2 never checks its input index. With an expired v3 campaign at input 0 and an expired v2 campaign at input 1, one payout box to the shared fee address satisfies both, and the builder keeps the smaller amount. This held whichever campaign was larger. Deployed v2 campaigns cannot be upgraded, so the fix is operational:
+
+- Give v3 campaigns a different fee address from any live v2 campaign. With different addresses, the combined sweep is rejected.
+- Or make sure no v3 campaign expires while a v2 campaign is still unswept, and sweep v2 promptly once its grace period ends.
+- Keep the fee address a plain wallet, as the team already plans.
+
 ## Scope
 
-This is a quick review using the Ergo Knowledge Base (EKB) two-pass contract audit: a first pass, then an independent verification pass, on each contract. It does not include the full audit engagement: no two independent first passes, no MockChain or on-chain testing, and no review of the frontend or transaction builders. Treat NV-1 and the off-chain notes (P-1, P-3, F-4) as items for the builder and frontend review.
+This is a quick review using the Ergo Knowledge Base (EKB) two-pass contract audit: a first pass, then an independent verification pass, on each contract, followed by the MockChain retest of v3 above. It does not include the full audit engagement: no two independent first passes, no node-level `/transactions/check` validation, and no review of the frontend or transaction builders.
